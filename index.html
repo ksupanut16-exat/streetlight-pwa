@@ -1,0 +1,550 @@
+<!DOCTYPE html>
+<html lang="th" dir="ltr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <meta name="theme-color" content="#0f2027" />
+  <meta name="description" content="ระบบตรวจสอบเสาไฟฟ้าพร้อม GPS Tracking - การทางพิเศษแห่งประเทศไทย สายทางกาญจนาภิเษก" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="EXP Inspect" />
+  <link rel="manifest" href="/manifest.json" />
+  <link rel="apple-touch-icon" href="/icons/icon-192.png" />
+  <title>ระบบตรวจสอบเสาไฟฟ้า | กาญจนาภิเษก</title>
+
+  <!-- Leaflet CSS -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="" />
+  <!-- Tailwind CSS -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- Leaflet JS -->
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
+  <!-- jsPDF for PDF export -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+
+  <style>
+    /* --- Custom Design Tokens --- */
+    :root {
+      --col-void:    #0b1622;
+      --col-surface: #121f2f;
+      --col-panel:   #1a2d42;
+      --col-border:  #243447;
+      --col-accent:  #f4a400;   /* expressway amber */
+      --col-accent2: #00bcd4;   /* GPS cyan */
+      --col-danger:  #ef4444;
+      --col-success: #22c55e;
+      --col-muted:   #64748b;
+      --col-text:    #e2e8f0;
+    }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; margin: 0; font-family: 'Segoe UI', 'Helvetica Neue', sans-serif; background: var(--col-void); color: var(--col-text); }
+
+    /* ---- Top Header ---- */
+    #app-header {
+      background: linear-gradient(90deg, var(--col-void) 0%, var(--col-surface) 100%);
+      border-bottom: 1px solid var(--col-border);
+      padding: 0.5rem 1rem;
+      display: flex; align-items: center; gap: 0.75rem;
+      position: sticky; top: 0; z-index: 1100;
+    }
+    #app-header .logo-badge {
+      background: var(--col-accent);
+      color: #000;
+      font-weight: 900; font-size: 0.65rem;
+      padding: 3px 7px; border-radius: 4px;
+      letter-spacing: 0.08em;
+      white-space: nowrap;
+    }
+    #app-header h1 { font-size: 0.85rem; font-weight: 600; color: var(--col-text); margin: 0; line-height: 1.2; }
+    #app-header .sub { font-size: 0.7rem; color: var(--col-muted); }
+    #gps-badge {
+      margin-left: auto;
+      display: flex; align-items: center; gap: 0.4rem;
+      font-size: 0.7rem; color: var(--col-muted);
+    }
+    #gps-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--col-muted); transition: background 0.5s; }
+    #gps-dot.active { background: var(--col-accent2); box-shadow: 0 0 6px var(--col-accent2); animation: pulse-dot 1.5s infinite; }
+    @keyframes pulse-dot { 0%,100%{opacity:1} 50%{opacity:0.4} }
+
+    /* ---- Tab Navigation ---- */
+    #tab-nav {
+      display: flex;
+      background: var(--col-surface);
+      border-bottom: 1px solid var(--col-border);
+    }
+    .tab-btn {
+      flex: 1; padding: 0.65rem 0;
+      text-align: center; font-size: 0.72rem; font-weight: 600;
+      color: var(--col-muted); border: none; background: transparent;
+      cursor: pointer; transition: color 0.2s, border-bottom 0.2s;
+      border-bottom: 2px solid transparent;
+      letter-spacing: 0.03em;
+    }
+    .tab-btn.active { color: var(--col-accent); border-bottom-color: var(--col-accent); }
+    .tab-btn .tab-icon { display: block; font-size: 1.1rem; margin-bottom: 1px; }
+
+    /* ---- Main Content ---- */
+    #main-content { height: calc(100dvh - 96px); position: relative; overflow: hidden; }
+    .tab-panel { display: none; height: 100%; overflow-y: auto; }
+    .tab-panel.active { display: flex; flex-direction: column; }
+
+    /* ---- MAP TAB ---- */
+    #map-tab { display: none; height: 100%; flex-direction: column; }
+    #map-tab.active { display: flex; }
+    #map { flex: 1; min-height: 0; background: #0b1a2c; }
+
+    /* Map overlay HUD */
+    #map-hud {
+      position: absolute; bottom: 0; left: 0; right: 0; z-index: 900;
+      pointer-events: none;
+    }
+    #speed-bar {
+      background: linear-gradient(0deg, rgba(11,22,34,0.95) 0%, transparent 100%);
+      padding: 0.75rem 1rem 0.6rem;
+      display: flex; gap: 1rem; align-items: flex-end;
+      pointer-events: all;
+    }
+    .hud-card {
+      background: rgba(18,31,47,0.88);
+      border: 1px solid var(--col-border);
+      border-radius: 8px; padding: 4px 10px;
+      text-align: center; backdrop-filter: blur(4px);
+    }
+    .hud-val { font-size: 1.3rem; font-weight: 800; color: var(--col-accent2); line-height: 1; }
+    .hud-label { font-size: 0.55rem; color: var(--col-muted); text-transform: uppercase; letter-spacing: 0.1em; }
+    #nearest-sw-bar {
+      background: rgba(11,22,34,0.92);
+      border-top: 1px solid var(--col-border);
+      padding: 0.4rem 1rem;
+      font-size: 0.72rem; color: var(--col-text);
+      display: flex; align-items: center; gap: 0.5rem;
+      pointer-events: all;
+    }
+    #nearest-sw-bar .sw-tag {
+      background: var(--col-accent); color: #000;
+      font-weight: 900; font-size: 0.7rem;
+      padding: 2px 7px; border-radius: 4px;
+    }
+    #alert-zone {
+      position: absolute; top: 8px; left: 50%; transform: translateX(-50%);
+      z-index: 1000; pointer-events: none;
+    }
+    #voice-alert-box {
+      background: var(--col-danger); color: #fff;
+      font-weight: 800; font-size: 0.85rem;
+      padding: 6px 16px; border-radius: 20px;
+      display: none; box-shadow: 0 4px 20px rgba(239,68,68,0.5);
+      animation: bounce-in 0.3s ease;
+      white-space: nowrap;
+    }
+    @keyframes bounce-in { 0%{transform:scale(0.7);opacity:0} 80%{transform:scale(1.05)} 100%{transform:scale(1);opacity:1} }
+
+    /* Leaflet popup custom */
+    .sw-popup .leaflet-popup-content-wrapper {
+      background: var(--col-panel); border: 1px solid var(--col-border);
+      border-radius: 8px; color: var(--col-text); font-size: 0.78rem;
+    }
+    .sw-popup .leaflet-popup-tip { background: var(--col-panel); }
+    .sw-popup-title { font-weight: 800; font-size: 0.9rem; color: var(--col-accent); margin-bottom: 4px; }
+
+    /* ---- FORM TAB ---- */
+    #form-tab { background: var(--col-void); }
+    .form-section {
+      background: var(--col-panel);
+      border: 1px solid var(--col-border);
+      border-radius: 10px; padding: 1rem; margin: 0.75rem;
+    }
+    .form-section-title {
+      font-size: 0.7rem; font-weight: 700; color: var(--col-accent);
+      text-transform: uppercase; letter-spacing: 0.1em;
+      margin-bottom: 0.75rem; padding-bottom: 0.5rem;
+      border-bottom: 1px solid var(--col-border);
+    }
+    .field-label { font-size: 0.72rem; color: var(--col-muted); margin-bottom: 4px; display: block; }
+    .field-input, .field-select, .field-textarea {
+      width: 100%; background: var(--col-surface);
+      border: 1px solid var(--col-border); border-radius: 6px;
+      color: var(--col-text); padding: 0.5rem 0.75rem;
+      font-size: 0.82rem; outline: none;
+      transition: border-color 0.2s;
+    }
+    .field-input:focus, .field-select:focus, .field-textarea:focus {
+      border-color: var(--col-accent);
+    }
+    .field-select option { background: var(--col-surface); }
+    .radio-group { display: flex; gap: 0.5rem; flex-wrap: wrap; }
+    .radio-btn {
+      flex: 1; min-width: 80px; text-align: center;
+      padding: 0.45rem; border-radius: 6px;
+      border: 1.5px solid var(--col-border); background: var(--col-surface);
+      color: var(--col-muted); font-size: 0.75rem; font-weight: 600;
+      cursor: pointer; transition: all 0.15s;
+    }
+    .radio-btn.selected-normal  { border-color: var(--col-success); color: var(--col-success); background: rgba(34,197,94,0.1); }
+    .radio-btn.selected-warning { border-color: var(--col-accent); color: var(--col-accent); background: rgba(244,164,0,0.1); }
+    .radio-btn.selected-danger  { border-color: var(--col-danger); color: var(--col-danger); background: rgba(239,68,68,0.1); }
+
+    /* Signature canvas */
+    #sig-canvas {
+      width: 100%; height: 120px; border-radius: 6px;
+      background: #fff; touch-action: none; cursor: crosshair;
+    }
+    .sig-controls { display: flex; gap: 0.5rem; margin-top: 0.5rem; }
+
+    /* Buttons */
+    .btn { padding: 0.55rem 1.2rem; border-radius: 7px; border: none; font-weight: 700; font-size: 0.8rem; cursor: pointer; transition: all 0.15s; display: inline-flex; align-items: center; gap: 0.4rem; }
+    .btn-accent { background: var(--col-accent); color: #000; }
+    .btn-accent:hover { filter: brightness(1.1); }
+    .btn-danger { background: var(--col-danger); color: #fff; }
+    .btn-ghost { background: var(--col-surface); color: var(--col-text); border: 1px solid var(--col-border); }
+    .btn-success { background: var(--col-success); color: #fff; }
+    .btn-full { width: 100%; justify-content: center; }
+
+    /* ---- REPORT TAB ---- */
+    #report-tab { background: var(--col-void); }
+    #report-list { padding: 0.75rem; display: flex; flex-direction: column; gap: 0.5rem; }
+    .report-card {
+      background: var(--col-panel); border: 1px solid var(--col-border);
+      border-radius: 8px; padding: 0.75rem; display: flex; align-items: center; gap: 0.75rem;
+    }
+    .report-card .status-dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
+    .status-normal  { background: var(--col-success); }
+    .status-warning { background: var(--col-accent); }
+    .status-danger  { background: var(--col-danger); }
+    .status-pending { background: var(--col-muted); }
+    .report-sw { font-weight: 800; font-size: 0.85rem; color: var(--col-accent2); }
+    .report-loc { font-size: 0.7rem; color: var(--col-muted); }
+    .report-status-text { font-size: 0.72rem; font-weight: 600; }
+
+    /* ---- SETTINGS TAB ---- */
+    #settings-tab { background: var(--col-void); }
+    .setting-row {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 0.75rem 1rem;
+      border-bottom: 1px solid var(--col-border);
+    }
+    .setting-label { font-size: 0.8rem; font-weight: 600; }
+    .setting-sub { font-size: 0.68rem; color: var(--col-muted); }
+    /* Toggle switch */
+    .toggle { position: relative; width: 42px; height: 24px; }
+    .toggle input { display: none; }
+    .toggle-slider {
+      position: absolute; inset: 0;
+      background: var(--col-border); border-radius: 12px; cursor: pointer;
+      transition: background 0.2s;
+    }
+    .toggle-slider::before {
+      content: ''; position: absolute;
+      width: 18px; height: 18px; left: 3px; top: 3px;
+      background: #fff; border-radius: 50%; transition: transform 0.2s;
+    }
+    .toggle input:checked + .toggle-slider { background: var(--col-accent); }
+    .toggle input:checked + .toggle-slider::before { transform: translateX(18px); }
+
+    /* Toast notification */
+    #toast {
+      position: fixed; bottom: 80px; left: 50%; transform: translateX(-50%) translateY(20px);
+      background: var(--col-panel); border: 1px solid var(--col-border);
+      color: var(--col-text); font-size: 0.78rem;
+      padding: 8px 16px; border-radius: 20px; z-index: 9999;
+      opacity: 0; transition: all 0.3s; pointer-events: none; white-space: nowrap;
+    }
+    #toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+
+    /* Scrollbar */
+    ::-webkit-scrollbar { width: 4px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: var(--col-border); border-radius: 4px; }
+
+    /* Loading overlay */
+    #loading-overlay {
+      position: fixed; inset: 0; z-index: 9998;
+      background: var(--col-void);
+      display: flex; flex-direction: column;
+      align-items: center; justify-content: center; gap: 1rem;
+    }
+    #loading-overlay .loader-ring {
+      width: 48px; height: 48px; border-radius: 50%;
+      border: 3px solid var(--col-border);
+      border-top-color: var(--col-accent);
+      animation: spin 0.8s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    #loading-overlay p { font-size: 0.8rem; color: var(--col-muted); }
+  </style>
+</head>
+<body>
+
+<!-- Loading Overlay -->
+<div id="loading-overlay">
+  <div class="loader-ring"></div>
+  <p>กำลังโหลดระบบ...</p>
+</div>
+
+<!-- Toast -->
+<div id="toast"></div>
+
+<!-- Header -->
+<header id="app-header">
+  <div class="logo-badge">EXP</div>
+  <div>
+    <h1>ระบบตรวจสอบเสาไฟฟ้า</h1>
+    <span class="sub">สายทางกาญจนาภิเษก</span>
+  </div>
+  <div id="gps-badge">
+    <div id="gps-dot"></div>
+    <span id="gps-label">รอ GPS</span>
+  </div>
+</header>
+
+<!-- Tab Navigation -->
+<nav id="tab-nav">
+  <button class="tab-btn active" data-tab="map-tab">
+    <span class="tab-icon">🗺️</span>แผนที่
+  </button>
+  <button class="tab-btn" data-tab="form-tab">
+    <span class="tab-icon">📋</span>บันทึก
+  </button>
+  <button class="tab-btn" data-tab="report-tab">
+    <span class="tab-icon">📊</span>รายงาน
+  </button>
+  <button class="tab-btn" data-tab="settings-tab">
+    <span class="tab-icon">⚙️</span>ตั้งค่า
+  </button>
+</nav>
+
+<!-- Main Content -->
+<main id="main-content">
+
+  <!-- ═══════════ MAP TAB ═══════════ -->
+  <div id="map-tab" class="tab-panel active" style="position:relative;">
+    <div id="map"></div>
+    <div id="alert-zone">
+      <div id="voice-alert-box">⚡ เสาไฟ SW-XXX</div>
+    </div>
+    <div id="map-hud">
+      <div id="nearest-sw-bar">
+        <span class="sw-tag" id="hud-sw-id">–</span>
+        <span id="hud-sw-name">ยังไม่มีข้อมูลเสา</span>
+        <span style="margin-left:auto;color:var(--col-accent2);" id="hud-sw-dist">–</span>
+      </div>
+      <div id="speed-bar">
+        <div class="hud-card">
+          <div class="hud-val" id="hud-speed">0</div>
+          <div class="hud-label">km/h</div>
+        </div>
+        <div class="hud-card">
+          <div class="hud-val" id="hud-acc">–</div>
+          <div class="hud-label">±m</div>
+        </div>
+        <div class="hud-card" style="flex:1;">
+          <div class="hud-val" style="font-size:0.75rem;" id="hud-coords">–</div>
+          <div class="hud-label">พิกัด GPS</div>
+        </div>
+        <button class="btn btn-accent" id="btn-center-map" style="margin-left:auto;">📍 ศูนย์กลาง</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══════════ FORM TAB ═══════════ -->
+  <div id="form-tab" class="tab-panel">
+    <!-- Location selector -->
+    <div class="form-section">
+      <div class="form-section-title">📍 ตำแหน่งด่านเก็บค่าผ่านทาง</div>
+      <div style="display:flex;flex-direction:column;gap:0.75rem;">
+        <div>
+          <label class="field-label">สายทาง</label>
+          <select class="field-select" id="sel-route" onchange="App.onRouteChange()">
+            <option value="">-- เลือกสายทาง --</option>
+            <option value="kanchanaphisek">กาญจนาภิเษก</option>
+          </select>
+        </div>
+        <div>
+          <label class="field-label">ด่านเก็บค่าผ่านทาง</label>
+          <select class="field-select" id="sel-tollgate">
+            <option value="">-- เลือกด่าน --</option>
+          </select>
+        </div>
+        <div>
+          <label class="field-label">หมายเลขเสา (SW)</label>
+          <select class="field-select" id="sel-sw-form">
+            <option value="">-- เลือกเสาไฟ --</option>
+          </select>
+        </div>
+      </div>
+    </div>
+
+    <!-- Inspection Status -->
+    <div class="form-section">
+      <div class="form-section-title">🔍 ผลการตรวจสอบ</div>
+      <div style="display:flex;flex-direction:column;gap:0.75rem;">
+        <div>
+          <label class="field-label">สถานะเสาไฟ</label>
+          <div class="radio-group" id="status-group">
+            <div class="radio-btn" data-val="normal" onclick="App.setStatus(this,'normal')">✅ ปกติ</div>
+            <div class="radio-btn" data-val="warning" onclick="App.setStatus(this,'warning')">⚠️ ชำรุด</div>
+            <div class="radio-btn" data-val="danger" onclick="App.setStatus(this,'danger')">🚨 เสียหาย</div>
+          </div>
+        </div>
+        <div>
+          <label class="field-label">หลอดไฟ</label>
+          <div class="radio-group" id="bulb-group">
+            <div class="radio-btn" data-val="ok" onclick="App.setRadio('bulb-group',this,'normal')">✅ ใช้งานได้</div>
+            <div class="radio-btn" data-val="broken" onclick="App.setRadio('bulb-group',this,'danger')">❌ เสีย</div>
+            <div class="radio-btn" data-val="missing" onclick="App.setRadio('bulb-group',this,'warning')">❓ หายไป</div>
+          </div>
+        </div>
+        <div>
+          <label class="field-label">โครงเสา</label>
+          <div class="radio-group" id="pole-group">
+            <div class="radio-btn" data-val="ok" onclick="App.setRadio('pole-group',this,'normal')">✅ ดี</div>
+            <div class="radio-btn" data-val="bent" onclick="App.setRadio('pole-group',this,'warning')">↗️ เอียง</div>
+            <div class="radio-btn" data-val="damaged" onclick="App.setRadio('pole-group',this,'danger')">💥 เสียหาย</div>
+          </div>
+        </div>
+        <div>
+          <label class="field-label">หมายเหตุ</label>
+          <textarea class="field-textarea" id="field-notes" rows="3" placeholder="บันทึกรายละเอียดเพิ่มเติม..."></textarea>
+        </div>
+        <div>
+          <label class="field-label">ชื่อผู้ตรวจ</label>
+          <input class="field-input" type="text" id="field-inspector" placeholder="ชื่อ-นามสกุล ผู้ตรวจ" />
+        </div>
+      </div>
+    </div>
+
+    <!-- Signature -->
+    <div class="form-section">
+      <div class="form-section-title">✍️ ลายมือชื่อผู้ตรวจ</div>
+      <canvas id="sig-canvas"></canvas>
+      <div class="sig-controls">
+        <button class="btn btn-ghost" onclick="App.clearSig()">🗑️ ล้าง</button>
+      </div>
+    </div>
+
+    <!-- Submit -->
+    <div style="padding:0.75rem;display:flex;flex-direction:column;gap:0.5rem;">
+      <button class="btn btn-success btn-full" onclick="App.submitForm()">
+        💾 บันทึกข้อมูล
+      </button>
+      <button class="btn btn-ghost btn-full" onclick="App.fillGPSCoords()">
+        📡 นำพิกัด GPS ปัจจุบัน
+      </button>
+    </div>
+  </div>
+
+  <!-- ═══════════ REPORT TAB ═══════════ -->
+  <div id="report-tab" class="tab-panel">
+    <div style="padding:0.75rem;display:flex;gap:0.5rem;flex-wrap:wrap;">
+      <button class="btn btn-accent" onclick="App.loadReport()">🔄 โหลดรายงาน</button>
+      <button class="btn btn-ghost" onclick="App.exportPDF()">📄 Export PDF</button>
+      <button class="btn btn-ghost" onclick="App.syncData()">☁️ ซิงค์</button>
+    </div>
+    <div id="report-stats" style="padding:0 0.75rem 0.75rem;display:flex;gap:0.5rem;">
+      <div class="hud-card" style="flex:1;">
+        <div class="hud-val" id="stat-total" style="font-size:1.1rem;">0</div>
+        <div class="hud-label">ทั้งหมด</div>
+      </div>
+      <div class="hud-card" style="flex:1;">
+        <div class="hud-val" id="stat-ok" style="font-size:1.1rem;color:#22c55e;">0</div>
+        <div class="hud-label">ปกติ</div>
+      </div>
+      <div class="hud-card" style="flex:1;">
+        <div class="hud-val" id="stat-warn" style="font-size:1.1rem;color:#f4a400;">0</div>
+        <div class="hud-label">ชำรุด</div>
+      </div>
+      <div class="hud-card" style="flex:1;">
+        <div class="hud-val" id="stat-danger" style="font-size:1.1rem;color:#ef4444;">0</div>
+        <div class="hud-label">เสียหาย</div>
+      </div>
+    </div>
+    <div id="report-list"></div>
+  </div>
+
+  <!-- ═══════════ SETTINGS TAB ═══════════ -->
+  <div id="settings-tab" class="tab-panel">
+    <div style="padding:0.75rem;">
+      <div class="form-section">
+        <div class="form-section-title">🔧 ตั้งค่าระบบ</div>
+
+        <div class="setting-row">
+          <div>
+            <div class="setting-label">เสียงแจ้งเตือน (TTS)</div>
+            <div class="setting-sub">อ่านหมายเลขเสาอัตโนมัติ</div>
+          </div>
+          <label class="toggle">
+            <input type="checkbox" id="toggle-tts" checked onchange="App.saveSetting('tts',this.checked)">
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+
+        <div class="setting-row">
+          <div>
+            <div class="setting-label">ระยะแจ้งเตือน (ม.)</div>
+            <div class="setting-sub">ระยะที่ระบบจะแจ้งเตือนเสาถัดไป</div>
+          </div>
+          <input class="field-input" type="number" id="alert-distance" value="50" min="10" max="200"
+            style="width:80px;text-align:center;" onchange="App.saveSetting('alertDist',this.value)">
+        </div>
+
+        <div class="setting-row">
+          <div>
+            <div class="setting-label">Google Apps Script URL</div>
+            <div class="setting-sub">API endpoint สำหรับ Google Sheets</div>
+          </div>
+        </div>
+        <div style="padding:0 0.5rem 0.5rem;">
+          <input class="field-input" type="url" id="gas-url" placeholder="https://script.google.com/macros/s/.../exec"
+            onchange="App.saveSetting('gasUrl',this.value)">
+        </div>
+
+        <div class="setting-row">
+          <div>
+            <div class="setting-label">Sheet ID (Google Sheets)</div>
+          </div>
+        </div>
+        <div style="padding:0 0.5rem 0.75rem;">
+          <input class="field-input" type="text" id="sheet-id" placeholder="1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgVE2upms"
+            onchange="App.saveSetting('sheetId',this.value)">
+        </div>
+
+        <div class="setting-row">
+          <div>
+            <div class="setting-label">ติดตาม GPS อัตโนมัติ</div>
+            <div class="setting-sub">ตามตำแหน่งของฉันบนแผนที่</div>
+          </div>
+          <label class="toggle">
+            <input type="checkbox" id="toggle-follow" checked onchange="App.saveSetting('follow',this.checked)">
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+
+        <div style="padding:0.75rem 0 0;">
+          <button class="btn btn-accent btn-full" onclick="App.testGAS()">🔌 ทดสอบการเชื่อมต่อ GAS</button>
+        </div>
+        <div style="padding:0.5rem 0 0;">
+          <button class="btn btn-ghost btn-full" onclick="App.clearLocalData()">🗑️ ล้างข้อมูลใน Cache</button>
+        </div>
+      </div>
+
+      <div class="form-section" style="font-size:0.72rem;color:var(--col-muted);line-height:1.8;">
+        <div class="form-section-title">ℹ️ เกี่ยวกับระบบ</div>
+        <div>เวอร์ชัน: <strong style="color:var(--col-text);">1.0.0</strong></div>
+        <div>หน่วยงาน: การทางพิเศษแห่งประเทศไทย</div>
+        <div>สายทาง: กาญจนาภิเษก</div>
+        <div id="pwa-status" style="margin-top:0.5rem;"></div>
+      </div>
+    </div>
+  </div>
+
+</main>
+
+<!-- Scripts -->
+<script src="src/js/config.js"></script>
+<script src="src/js/data.js"></script>
+<script src="src/js/map.js"></script>
+<script src="src/js/form.js"></script>
+<script src="src/js/report.js"></script>
+<script src="src/js/app.js"></script>
+
+</body>
+</html>
