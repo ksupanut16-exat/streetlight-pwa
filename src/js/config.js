@@ -19,8 +19,8 @@ const CONFIG = {
   FOLLOW_MAP:        true,
 
   // ── Map defaults ─────────────────────────────────────────────────
-  MAP_CENTER: [13.8, 100.5],  // Bangkok approx — overridden by GPS
-  MAP_ZOOM:   15,
+  MAP_CENTER: [13.636, 100.675],  // Bangkok approx — overridden by GPS
+  MAP_ZOOM:   16,
 
   // ── Toll Gate Master Data ─────────────────────────────────────────
   // Structure: routeId -> [ { id, name, km, swIds: [] } ]

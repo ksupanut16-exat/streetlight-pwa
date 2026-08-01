@@ -1,212 +1,184 @@
 /**
- * form.js — Inspection Form: dropdown chains, signature canvas, validation, submit
+ * form.js — Inspection Form (v2 — ตรงกับโครงสร้าง SW_Poles จริง)
+ *
+ * สถานะที่ใช้:
+ *   ไฟติดAB / ไฟดับA / ไฟดับB / ไฟดับAB / Off-B (ตามข้อมูลจริง)
  */
 
 const FormModule = (() => {
 
-  let sigCanvas, sigCtx;
-  let isSigning = false;
-  let currentStatus = null;
-  let radioState = {};  // { groupId: { el, val } }
+  let sigCanvas, sigCtx, isSigning = false;
+  let selectedStatus = null;
 
-  // ─────────────────────────────────────────────────────────────────
-  // INIT
-  // ─────────────────────────────────────────────────────────────────
+  // ── Init ───────────────────────────────────────────────────────────────────
   function init() {
-    // Signature canvas
     sigCanvas = document.getElementById('sig-canvas');
-    sigCtx = sigCanvas.getContext('2d');
+    sigCtx    = sigCanvas.getContext('2d');
     _initSigCanvas();
-
-    // Populate route selector (already has kanchanaphisek option in HTML)
   }
 
-  // ─────────────────────────────────────────────────────────────────
-  // DROPDOWN CHAIN: Route → Tollgate → SW pole
-  // ─────────────────────────────────────────────────────────────────
-  function onRouteChange() {
-    const route = document.getElementById('sel-route').value;
-    const selTollgate = document.getElementById('sel-tollgate');
-    const selSw = document.getElementById('sel-sw-form');
-
-    selTollgate.innerHTML = '<option value="">-- เลือกด่าน --</option>';
-    selSw.innerHTML = '<option value="">-- เลือกเสาไฟ --</option>';
-
-    if (!route || !CONFIG.TOLL_GATES[route]) return;
-
-    CONFIG.TOLL_GATES[route].forEach(tg => {
-      const opt = document.createElement('option');
-      opt.value = tg.id;
-      opt.textContent = `${tg.name} (${tg.km})`;
-      selTollgate.appendChild(opt);
-    });
-
-    selTollgate.onchange = () => _onTollgateChange(route);
-  }
-
-  function _onTollgateChange(route) {
-    const tgId = document.getElementById('sel-tollgate').value;
-    const selSw = document.getElementById('sel-sw-form');
-    selSw.innerHTML = '<option value="">-- เลือกเสาไฟ --</option>';
-    if (!tgId) return;
-
-    const tg = CONFIG.TOLL_GATES[route].find(t => t.id === tgId);
-    if (!tg) return;
-
-    // Merge from SW data cache for status info
-    tg.swIds.forEach(swId => {
-      const swPole = Data.swList.find(s => s.id === swId);
-      const label  = swPole
-        ? `${swId} — ${CONFIG.STATUS_LABELS[swPole.status] || '?'}`
-        : swId;
-      const opt = document.createElement('option');
-      opt.value = swId;
-      opt.textContent = label;
-      selSw.appendChild(opt);
-    });
-  }
-
-  // Pre-fill form from a SW ID (called from map popup button)
+  // ── Fill form from a SW ID (called from map popup) ─────────────────────────
   function fillFromSwId(swId) {
-    const swPole = Data.swList.find(s => s.id === swId);
+    const swPole = Data.swList.find(p => String(p.id) === String(swId));
     if (!swPole) return;
 
-    // Find which route/tollgate owns this SW
-    let foundRoute = null, foundTg = null;
-    for (const [routeKey, gates] of Object.entries(CONFIG.TOLL_GATES)) {
-      for (const tg of gates) {
-        if (tg.swIds.includes(swId)) { foundRoute = routeKey; foundTg = tg.id; break; }
-      }
-      if (foundRoute) break;
-    }
+    document.getElementById('sel-sw-form').value   = swId;
+    document.getElementById('field-sw-id-display').textContent = swId;
+    document.getElementById('field-sw-status-display').textContent = swPole.status || '–';
+    document.getElementById('field-sw-coords').textContent =
+      swPole.lat && swPole.lng ? `${swPole.lat.toFixed(5)}, ${swPole.lng.toFixed(5)}` : '–';
 
-    if (foundRoute) {
-      document.getElementById('sel-route').value = foundRoute;
-      onRouteChange();
-      setTimeout(() => {
-        document.getElementById('sel-tollgate').value = foundTg;
-        _onTollgateChange(foundRoute);
-        setTimeout(() => {
-          document.getElementById('sel-sw-form').value = swId;
-        }, 50);
-      }, 50);
-    }
+    // Prefill last repair info
+    if (swPole.repairItem) document.getElementById('field-repair-item').value = swPole.repairItem;
+    if (swPole.repairBy)   document.getElementById('field-repair-by').value   = swPole.repairBy;
+
+    // Highlight current status button
+    _preselectStatus(swPole.category);
   }
 
-  // ─────────────────────────────────────────────────────────────────
-  // RADIO BUTTON GROUPS
-  // ─────────────────────────────────────────────────────────────────
+  function _preselectStatus(cat) {
+    document.querySelectorAll('.sw-status-btn').forEach(b => {
+      b.classList.remove('sel-normal','sel-warning','sel-danger');
+    });
+    if (cat === 'normal')  _clickStatusBtn('ไฟติดAB');
+    if (cat === 'warning') _clickStatusBtn('ไฟดับA');
+    if (cat === 'danger')  _clickStatusBtn('ไฟดับAB');
+  }
+
+  function _clickStatusBtn(val) {
+    const btn = document.querySelector(`.sw-status-btn[data-val="${val}"]`);
+    if (btn) setStatus(btn, val);
+  }
+
+  // ── Status radio ───────────────────────────────────────────────────────────
   function setStatus(el, val) {
-    currentStatus = val;
-    document.querySelectorAll('#status-group .radio-btn').forEach(b => {
-      b.className = 'radio-btn';
+    selectedStatus = val;
+    document.querySelectorAll('.sw-status-btn').forEach(b => {
+      b.classList.remove('sel-normal','sel-warning','sel-danger');
     });
-    el.className = `radio-btn selected-${val}`;
+    if (val === 'ไฟติดAB')  el.classList.add('sel-normal');
+    else if (val === 'ไฟดับAB') el.classList.add('sel-danger');
+    else el.classList.add('sel-warning');
   }
 
-  function setRadio(groupId, el, colorClass) {
-    radioState[groupId] = { el, val: el.dataset.val };
-    document.querySelectorAll(`#${groupId} .radio-btn`).forEach(b => {
-      b.className = 'radio-btn';
-    });
-    el.className = `radio-btn selected-${colorClass}`;
-  }
-
-  // ─────────────────────────────────────────────────────────────────
-  // GPS COORD FILL
-  // ─────────────────────────────────────────────────────────────────
+  // ── Fill GPS coords ────────────────────────────────────────────────────────
   function fillGPSCoords() {
     const lat = MapModule.userLat;
     const lng = MapModule.userLng;
     if (lat === null) { App.toast('ยังไม่มีสัญญาณ GPS'); return; }
-    App.toast(`นำพิกัด: ${lat.toFixed(5)}, ${lng.toFixed(5)}`);
-    // Optionally auto-set the nearest SW
+
+    // Auto-select nearest pole
     const result = Data.findNearestSw(lat, lng);
     if (result && result.distanceM < 100) {
       fillFromSwId(result.sw.id);
-      App.toast(`เลือก ${result.sw.id} อัตโนมัติ (${result.distanceM}ม.)`);
+      // Also update the dropdown
+      const sel = document.getElementById('sel-sw-form');
+      if (sel) sel.value = result.sw.id;
+      App.toast(`📡 เลือก ${result.sw.id} อัตโนมัติ (${result.distanceM}ม.)`);
+    } else {
+      App.toast(`📡 พิกัด: ${lat.toFixed(5)}, ${lng.toFixed(5)}`);
     }
   }
 
-  // ─────────────────────────────────────────────────────────────────
-  // FORM VALIDATION & SUBMIT
-  // ─────────────────────────────────────────────────────────────────
+  // ── Populate SW dropdown ───────────────────────────────────────────────────
+  function populateSwDropdown() {
+    const sel = document.getElementById('sel-sw-form');
+    if (!sel) return;
+    sel.innerHTML = '<option value="">-- เลือกเสา --</option>';
+    Data.swList.forEach(sw => {
+      const opt = document.createElement('option');
+      opt.value = sw.id;
+      const catLabel = Data.statusDefs[sw.category]?.icon || '❓';
+      opt.textContent = `${catLabel} ${sw.id}${sw.status && sw.status !== sw.id ? ' — ' + (sw.statusNew || sw.status) : ''}`;
+      sel.appendChild(opt);
+    });
+    sel.onchange = () => fillFromSwId(sel.value);
+  }
+
+  // ── Validate ───────────────────────────────────────────────────────────────
   function validate() {
     const swId     = document.getElementById('sel-sw-form').value;
     const inspector= document.getElementById('field-inspector').value.trim();
-
-    if (!swId)      { App.toast('⚠️ กรุณาเลือกเสาไฟ'); return false; }
-    if (!currentStatus) { App.toast('⚠️ กรุณาเลือกสถานะเสา'); return false; }
-    if (!inspector) { App.toast('⚠️ กรุณากรอกชื่อผู้ตรวจ'); return false; }
+    if (!swId)         { App.toast('⚠️ กรุณาเลือกเสา'); return false; }
+    if (!selectedStatus){ App.toast('⚠️ กรุณาเลือกสถานะ'); return false; }
+    if (!inspector)    { App.toast('⚠️ กรุณากรอกชื่อผู้ตรวจ'); return false; }
     return true;
   }
 
+  // ── Submit ─────────────────────────────────────────────────────────────────
   async function submit() {
     if (!validate()) return;
 
-    const swId     = document.getElementById('sel-sw-form').value;
-    const tgId     = document.getElementById('sel-tollgate').value;
-    const inspector= document.getElementById('field-inspector').value.trim();
-    const notes    = document.getElementById('field-notes').value.trim();
-    const bulbVal  = radioState['bulb-group']?.val || '';
-    const poleVal  = radioState['pole-group']?.val || '';
-    const sigData  = sigCanvas.toDataURL('image/png');
+    const swId      = document.getElementById('sel-sw-form').value;
+    const inspector = document.getElementById('field-inspector').value.trim();
+    const repairItem= document.getElementById('field-repair-item').value.trim();
+    const repairBy  = document.getElementById('field-repair-by').value.trim() || inspector;
+    const notes     = document.getElementById('field-notes').value.trim();
+    const sigData   = sigCanvas.toDataURL('image/png');
+
+    // Find old status for log
+    const swPole   = Data.swList.find(p => p.id === swId);
+    const oldStatus= swPole ? (swPole.statusNew || swPole.status) : '';
 
     const record = {
-      id:         `INSP-${Date.now()}`,
       swId,
-      tollgateId: tgId,
-      status:     currentStatus,
-      bulb:       bulbVal,
-      pole:       poleVal,
+      status:      selectedStatus,
+      oldStatus,
+      newStatus:   selectedStatus,
+      repairItem,
+      repairBy,
       notes,
       inspector,
-      lat:        MapModule.userLat,
-      lng:        MapModule.userLng,
-      signature:  sigData,
-      timestamp:  new Date().toISOString(),
-      syncStatus: 'pending'
+      lat:         MapModule.userLat,
+      lng:         MapModule.userLng,
+      signature:   sigData,
+      timestamp:   new Date().toISOString(),
+      photoUrl:    swPole?.photoUrl || '',
     };
 
     App.toast('กำลังบันทึก...');
-    const result = await Data.postInspectionToGAS(record);
 
-    if (result.status === 'ok') {
+    // Update status in Data cache + GAS
+    const statusRes = await Data.updateSwStatus(swId, selectedStatus, inspector);
+    // Add maintenance record if there's a repair item
+    if (repairItem) {
+      await Data.addMaintenance(record);
+    }
+
+    // Update map marker color immediately
+    const newCat = Data.classifyStatus(null, selectedStatus);
+    MapModule.updateSwMarkerIcon(swId, newCat);
+
+    if (statusRes.status === 'ok') {
       App.toast('✅ บันทึกสำเร็จ — ซิงค์แล้ว');
     } else {
       App.toast('💾 บันทึกใน Cache — รอซิงค์');
-    }
-
-    // Update SW pole status in memory & map marker
-    const swPole = Data.swList.find(s => s.id === swId);
-    if (swPole) {
-      swPole.status = currentStatus;
-      swPole.lastChecked = new Date().toISOString().split('T')[0];
-      MapModule.updateSwMarkerIcon(swId, currentStatus);
     }
 
     resetForm();
   }
 
   function resetForm() {
-    document.getElementById('sel-sw-form').value = '';
-    document.getElementById('field-notes').value = '';
-    currentStatus = null;
-    radioState = {};
-    document.querySelectorAll('.radio-btn').forEach(b => b.className = 'radio-btn');
+    document.getElementById('sel-sw-form').value          = '';
+    document.getElementById('field-sw-id-display').textContent = '–';
+    document.getElementById('field-sw-status-display').textContent = '–';
+    document.getElementById('field-sw-coords').textContent = '–';
+    document.getElementById('field-repair-item').value    = '';
+    document.getElementById('field-repair-by').value      = '';
+    document.getElementById('field-notes').value          = '';
+    selectedStatus = null;
+    document.querySelectorAll('.sw-status-btn').forEach(b =>
+      b.classList.remove('sel-normal','sel-warning','sel-danger'));
     clearSig();
   }
 
-  // ─────────────────────────────────────────────────────────────────
-  // SIGNATURE CANVAS
-  // ─────────────────────────────────────────────────────────────────
+  // ── Signature canvas ───────────────────────────────────────────────────────
   function _initSigCanvas() {
-    // Resize canvas to match its CSS size
     function resize() {
       const rect = sigCanvas.getBoundingClientRect();
-      sigCanvas.width  = rect.width;
-      sigCanvas.height = rect.height;
-      sigCtx.strokeStyle = '#1a2d42';
+      sigCanvas.width  = rect.width  || 300;
+      sigCanvas.height = rect.height || 120;
+      sigCtx.strokeStyle = '#0f2027';
       sigCtx.lineWidth   = 2.5;
       sigCtx.lineCap     = 'round';
       sigCtx.lineJoin    = 'round';
@@ -214,45 +186,30 @@ const FormModule = (() => {
     resize();
     window.addEventListener('resize', resize);
 
-    const getPos = (e) => {
-      const rect = sigCanvas.getBoundingClientRect();
-      const src  = e.touches ? e.touches[0] : e;
-      return { x: src.clientX - rect.left, y: src.clientY - rect.top };
+    const pos = e => {
+      const r = sigCanvas.getBoundingClientRect();
+      const s = e.touches ? e.touches[0] : e;
+      return { x: s.clientX - r.left, y: s.clientY - r.top };
     };
 
     sigCanvas.addEventListener('pointerdown', e => {
       isSigning = true;
-      const { x, y } = getPos(e);
-      sigCtx.beginPath();
-      sigCtx.moveTo(x, y);
+      const {x,y} = pos(e);
+      sigCtx.beginPath(); sigCtx.moveTo(x,y);
     });
     sigCanvas.addEventListener('pointermove', e => {
       if (!isSigning) return;
       e.preventDefault();
-      const { x, y } = getPos(e);
-      sigCtx.lineTo(x, y);
-      sigCtx.stroke();
+      const {x,y} = pos(e);
+      sigCtx.lineTo(x,y); sigCtx.stroke();
     });
-    sigCanvas.addEventListener('pointerup',   () => { isSigning = false; sigCtx.closePath(); });
-    sigCanvas.addEventListener('pointerout',  () => { isSigning = false; sigCtx.closePath(); });
+    sigCanvas.addEventListener('pointerup',  () => { isSigning=false; sigCtx.closePath(); });
+    sigCanvas.addEventListener('pointerout', () => { isSigning=false; sigCtx.closePath(); });
   }
 
   function clearSig() {
-    sigCtx.clearRect(0, 0, sigCanvas.width, sigCanvas.height);
+    sigCtx?.clearRect(0, 0, sigCanvas?.width, sigCanvas?.height);
   }
 
-  // ─────────────────────────────────────────────────────────────────
-  // PUBLIC API
-  // ─────────────────────────────────────────────────────────────────
-  return {
-    init,
-    onRouteChange,
-    fillFromSwId,
-    setStatus,
-    setRadio,
-    fillGPSCoords,
-    submit,
-    clearSig,
-    resetForm
-  };
+  return { init, fillFromSwId, setStatus, fillGPSCoords, populateSwDropdown, submit, clearSig, resetForm };
 })();

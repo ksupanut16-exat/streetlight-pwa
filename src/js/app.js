@@ -1,26 +1,18 @@
 /**
- * app.js — Application Orchestrator
- * Bootstraps all modules, handles tab switching, exposes global App API.
+ * app.js — Application Orchestrator v2
  */
 
 const App = (() => {
   let _toastTimer = null;
 
-  // ─────────────────────────────────────────────────────────────────
-  // BOOTSTRAP
-  // ─────────────────────────────────────────────────────────────────
   async function boot() {
-    // Register service worker
+    // Service Worker
     if ('serviceWorker' in navigator) {
       try {
-        const reg = await navigator.serviceWorker.register('/service-worker.js');
-        console.info('[SW] Registered:', reg.scope);
-        document.getElementById('pwa-status').innerHTML =
-          '<span style="color:#22c55e;">✅ PWA Service Worker Active</span>';
-      } catch (e) {
-        console.warn('[SW] Registration failed:', e);
-        document.getElementById('pwa-status').innerHTML =
-          '<span style="color:#64748b;">ℹ️ Service Worker ไม่พร้อมใช้งาน</span>';
+        await navigator.serviceWorker.register('/service-worker.js');
+        document.getElementById('pwa-status').innerHTML = '<span style="color:#22c55e;">✅ PWA Active</span>';
+      } catch(e) {
+        document.getElementById('pwa-status').innerHTML = '<span style="color:#64748b;">ℹ️ SW ไม่พร้อม</span>';
       }
     }
 
@@ -30,177 +22,186 @@ const App = (() => {
     _initTabs();
     _restoreSettings();
 
-    // Load SW pole data
+    // Load poles
+    _setLoading('กำลังดึงข้อมูลเสาไฟ...');
     await Data.fetchSwFromGAS();
     MapModule.plotSwMarkers();
+    FormModule.populateSwDropdown();
 
-    // Start GPS
+    // Stats
+    _renderStats();
+
+    // GPS
     MapModule.startGPS();
 
-    // Remove loading overlay
+    // Hide loader
     setTimeout(() => {
-      const overlay = document.getElementById('loading-overlay');
-      overlay.style.transition = 'opacity 0.4s';
-      overlay.style.opacity = '0';
-      setTimeout(() => overlay.remove(), 400);
-    }, 800);
+      const ov = document.getElementById('loading-overlay');
+      ov.style.transition = 'opacity .4s';
+      ov.style.opacity = '0';
+      setTimeout(() => ov.remove(), 400);
+    }, 600);
 
-    // Load voices for TTS
+    // Prime TTS voices
     if ('speechSynthesis' in window) {
-      window.speechSynthesis.getVoices(); // prime the list
+      window.speechSynthesis.getVoices();
       window.speechSynthesis.onvoiceschanged = () => window.speechSynthesis.getVoices();
     }
 
-    console.info('[App] Boot complete.');
+    console.info('[App] Boot complete —', Data.swList.length, 'poles loaded');
   }
 
-  // ─────────────────────────────────────────────────────────────────
-  // TAB SYSTEM
-  // ─────────────────────────────────────────────────────────────────
+  function _setLoading(msg) {
+    const el = document.getElementById('loading-msg');
+    if (el) el.textContent = msg;
+  }
+
+  // ── Tab system ─────────────────────────────────────────────────────────────
   function _initTabs() {
     document.querySelectorAll('.tab-btn').forEach(btn => {
       btn.addEventListener('click', () => {
         const tabId = btn.dataset.tab;
-        // Deactivate all
         document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
         document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
-        // Activate target
         btn.classList.add('active');
         document.getElementById(tabId).classList.add('active');
-
-        // Re-invalidate Leaflet map size when map tab shown
-        if (tabId === 'map-tab') {
-          setTimeout(() => MapModule.map?.invalidateSize(), 100);
-        }
+        if (tabId === 'map-tab') setTimeout(() => MapModule.map?.invalidateSize(), 80);
+        if (tabId === 'report-tab') _renderReport();
       });
     });
   }
 
-  // ─────────────────────────────────────────────────────────────────
-  // SETTINGS PERSISTENCE
-  // ─────────────────────────────────────────────────────────────────
+  // ── Settings restore ───────────────────────────────────────────────────────
   function _restoreSettings() {
-    const stored = JSON.parse(localStorage.getItem('exp_settings') || '{}');
-    if (stored.gasUrl)    document.getElementById('gas-url').value       = stored.gasUrl;
-    if (stored.sheetId)   document.getElementById('sheet-id').value      = stored.sheetId;
-    if (stored.alertDist) document.getElementById('alert-distance').value = stored.alertDist;
-    if (typeof stored.tts === 'boolean')    document.getElementById('toggle-tts').checked    = stored.tts;
-    if (typeof stored.follow === 'boolean') document.getElementById('toggle-follow').checked  = stored.follow;
-    if (stored.inspector) document.getElementById('field-inspector').value = stored.inspector;
+    const s = JSON.parse(localStorage.getItem('exp_settings') || '{}');
+    if (s.gasUrl)    { document.getElementById('gas-url').value       = s.gasUrl;    CONFIG.GAS_URL = s.gasUrl; }
+    if (s.alertDist) { document.getElementById('alert-distance').value = s.alertDist; CONFIG.ALERT_DISTANCE_M = parseInt(s.alertDist); }
+    if (typeof s.tts === 'boolean')    { document.getElementById('toggle-tts').checked   = s.tts;    CONFIG.TTS_ENABLED = s.tts; }
+    if (typeof s.follow === 'boolean') { document.getElementById('toggle-follow').checked = s.follow; CONFIG.FOLLOW_MAP  = s.follow; }
+    if (s.inspector) document.getElementById('field-inspector').value = s.inspector;
   }
 
   function saveSetting(key, value) {
-    const stored = JSON.parse(localStorage.getItem('exp_settings') || '{}');
-    stored[key] = value;
-    localStorage.setItem('exp_settings', JSON.stringify(stored));
-    // Apply live
-    if (key === 'tts')       CONFIG.TTS_ENABLED       = value;
-    if (key === 'follow')    CONFIG.FOLLOW_MAP         = value;
-    if (key === 'alertDist') CONFIG.ALERT_DISTANCE_M   = parseInt(value, 10);
-    if (key === 'gasUrl')    CONFIG.GAS_URL             = value;
-    if (key === 'sheetId')   CONFIG.SHEET_ID            = value;
-    toast(`บันทึกการตั้งค่า: ${key}`);
+    const s = JSON.parse(localStorage.getItem('exp_settings') || '{}');
+    s[key] = value;
+    localStorage.setItem('exp_settings', JSON.stringify(s));
+    if (key === 'tts')       CONFIG.TTS_ENABLED      = value;
+    if (key === 'follow')    CONFIG.FOLLOW_MAP        = value;
+    if (key === 'alertDist') CONFIG.ALERT_DISTANCE_M  = parseInt(value);
+    if (key === 'gasUrl')    CONFIG.GAS_URL           = value;
+    toast(`บันทึก: ${key}`);
   }
 
-  // ─────────────────────────────────────────────────────────────────
-  // GLOBAL ACTION BRIDGE (called from HTML inline handlers)
-  // ─────────────────────────────────────────────────────────────────
-  function onRouteChange() {
-    FormModule.onRouteChange();
+  // ── Stats ──────────────────────────────────────────────────────────────────
+  function _renderStats() {
+    const poles = Data.swList;
+    const counts = { normal:0, warning:0, danger:0, landmark:0, pending:0 };
+    poles.forEach(p => { counts[p.category] = (counts[p.category]||0)+1; });
+    const el = id => document.getElementById(id);
+    if (el('stat-total'))  el('stat-total').textContent  = poles.length;
+    if (el('stat-ok'))     el('stat-ok').textContent     = counts.normal;
+    if (el('stat-warn'))   el('stat-warn').textContent   = counts.warning;
+    if (el('stat-danger')) el('stat-danger').textContent = counts.danger;
   }
 
-  function setStatus(el, val) {
-    FormModule.setStatus(el, val);
+  // ── Report render ──────────────────────────────────────────────────────────
+  function _renderReport() {
+    _renderStats();
+    const container = document.getElementById('report-list');
+    const poles = Data.swList;
+    const CAT_COLOR = { normal:'#22c55e', warning:'#f4a400', danger:'#ef4444', landmark:'#00bcd4', pending:'#64748b' };
+
+    if (!poles.length) {
+      container.innerHTML = '<div style="text-align:center;padding:2rem;color:#64748b;font-size:.8rem;">ไม่มีข้อมูล — กด "โหลดข้อมูล"</div>';
+      return;
+    }
+
+    container.innerHTML = poles.map(p => {
+      const color  = CAT_COLOR[p.category] || '#64748b';
+      const def    = Data.statusDefs[p.category] || { icon:'❓', label:p.status };
+      const display= p.statusNew || p.status || '–';
+      const repairStr = p.repairDate ? `🔧 ${p.repairDate}${p.repairBy ? ' · ' + p.repairBy : ''}` : '';
+      const photoBtn  = p.photoUrl
+        ? `<a href="${p.photoUrl}" target="_blank" style="font-size:.65rem;color:var(--cyan);margin-left:auto;">📷</a>`
+        : '';
+
+      return `<div class="rcard">
+        <div class="rdot" style="background:${color};${p.category==='landmark'?'border-radius:2px;transform:rotate(45deg);':''}"></div>
+        <div style="flex:1;min-width:0;">
+          <div class="r-id">${p.id}</div>
+          <div class="r-status" style="color:${color};">${def.icon} ${display}</div>
+          ${repairStr ? `<div class="r-sub">${repairStr}</div>` : ''}
+          ${p.lastEditor ? `<div class="r-sub">แก้ไขโดย: ${p.lastEditor}</div>` : ''}
+        </div>
+        ${photoBtn}
+        <button onclick="App.openFormForSw('${p.id}')"
+          style="background:var(--accent);color:#000;border:none;border-radius:5px;
+                 padding:4px 9px;font-size:.68rem;font-weight:700;cursor:pointer;flex-shrink:0;">
+          📝
+        </button>
+      </div>`;
+    }).join('');
   }
 
-  function setRadio(groupId, el, colorClass) {
-    FormModule.setRadio(groupId, el, colorClass);
-  }
-
-  function clearSig() {
-    FormModule.clearSig();
-  }
-
-  function fillGPSCoords() {
-    FormModule.fillGPSCoords();
-  }
-
-  function submitForm() {
-    FormModule.submit();
-  }
+  // ── Global action bridge ───────────────────────────────────────────────────
+  function setStatus(el, val) { FormModule.setStatus(el, val); }
+  function clearSig()         { FormModule.clearSig(); }
+  function fillGPSCoords()    { FormModule.fillGPSCoords(); }
+  function submitForm()       { FormModule.submit(); }
+  function resetForm()        { FormModule.resetForm(); }
 
   function openFormForSw(swId) {
-    // Switch to form tab and prefill
     document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
     document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
     document.querySelector('[data-tab="form-tab"]').classList.add('active');
     document.getElementById('form-tab').classList.add('active');
     FormModule.fillFromSwId(swId);
+    // Also set the dropdown value
+    setTimeout(() => { document.getElementById('sel-sw-form').value = swId; }, 50);
   }
 
-  function loadReport() {
-    ReportModule.load();
-  }
-
-  function exportPDF() {
-    ReportModule.exportPDF();
+  async function loadReport() {
+    toast('กำลังโหลด...');
+    await Data.fetchSwFromGAS();
+    _renderReport();
+    toast('✅ โหลดเสร็จ');
   }
 
   async function syncData() {
-    toast('กำลังซิงค์ข้อมูล...');
+    toast('กำลังซิงค์...');
     await Data.fetchSwFromGAS();
     MapModule.plotSwMarkers();
-    await Data.fetchInspectionsFromGAS();
-    ReportModule.render();
-    toast('✅ ซิงค์เสร็จสิ้น');
+    FormModule.populateSwDropdown();
+    _renderReport();
+    toast('✅ ซิงค์เสร็จ — ' + Data.swList.length + ' เสา');
   }
 
   async function testGAS() {
-    toast('กำลังทดสอบ GAS...');
-    const result = await Data.testConnection();
-    toast(result.status === 'ok' ? '✅ เชื่อมต่อสำเร็จ' : `❌ ${result.message}`);
+    toast('กำลังทดสอบ...');
+    const r = await Data.testConnection();
+    toast(r.status === 'ok' ? `✅ เชื่อมต่อสำเร็จ` : `❌ ${r.message}`);
   }
 
   function clearLocalData() {
-    if (!confirm('ล้างข้อมูลใน Cache ทั้งหมด?')) return;
-    localStorage.removeItem('exp_sw_cache');
-    localStorage.removeItem('exp_inspections');
+    if (!confirm('ล้างข้อมูล Cache ทั้งหมด?')) return;
+    ['exp_sw_cache_v2','exp_maint_cache','exp_settings'].forEach(k => localStorage.removeItem(k));
     toast('🗑️ ล้าง Cache แล้ว');
   }
 
-  // ─────────────────────────────────────────────────────────────────
-  // TOAST
-  // ─────────────────────────────────────────────────────────────────
-  function toast(message, duration = 3000) {
+  function exportPDF() { ReportModule.exportPDF(); }
+
+  // ── Toast ──────────────────────────────────────────────────────────────────
+  function toast(msg, ms = 3000) {
     const el = document.getElementById('toast');
-    el.textContent = message;
+    el.textContent = msg;
     el.classList.add('show');
     clearTimeout(_toastTimer);
-    _toastTimer = setTimeout(() => el.classList.remove('show'), duration);
+    _toastTimer = setTimeout(() => el.classList.remove('show'), ms);
   }
 
-  // ─────────────────────────────────────────────────────────────────
-  // PUBLIC API
-  // ─────────────────────────────────────────────────────────────────
-  return {
-    boot,
-    toast,
-    saveSetting,
-    // HTML inline handlers
-    onRouteChange,
-    setStatus,
-    setRadio,
-    clearSig,
-    fillGPSCoords,
-    submitForm,
-    openFormForSw,
-    loadReport,
-    exportPDF,
-    syncData,
-    testGAS,
-    clearLocalData,
-  };
+  return { boot, toast, saveSetting, setStatus, clearSig, fillGPSCoords,
+           submitForm, resetForm, openFormForSw, loadReport, exportPDF,
+           syncData, testGAS, clearLocalData };
 })();
 
-// ── Entry point ───────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => App.boot());

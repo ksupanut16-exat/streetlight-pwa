@@ -1,195 +1,245 @@
 /**
- * map.js — Leaflet Map, GPS Tracking, SW Marker Layer, TTS Voice Alerts
+ * map.js — Leaflet Map, GPS, SW Markers, TTS Voice Alerts (v2)
  *
- * Naming convention strictly followed:
- *   - All pole marker variables use "sw" prefix (NOT "sp").
- *   - Examples: swMarkers, swLayer, swMarkerGroup, nearestSw, swIconFor()
+ * สถานะ → สี:
+ *   normal   → #22c55e (เขียว)  — ไฟติดAB
+ *   warning  → #f4a400 (เหลือง) — ไฟดับA / ไฟดับB / Off-B
+ *   danger   → #ef4444 (แดง)    — ไฟดับAB
+ *   landmark → #00bcd4 (ฟ้า)    — SP01/HM1 เสาหลัก
+ *   pending  → #64748b (เทา)
+ *
+ * ตัวแปรทั้งหมดที่เกี่ยวกับเสา ใช้ prefix "sw" เท่านั้น
  */
 
 const MapModule = (() => {
 
   let map = null;
-  let userMarker = null;
-  let userAccCircle = null;
-  let swMarkerGroup = null;       // Leaflet layer group for all SW markers
-  const swMarkers = {};           // { swId: L.Marker } lookup
+  let userMarker     = null;
+  let userAccCircle  = null;
+  let swMarkerGroup  = null;
+  const swMarkers    = {};   // { id: L.Marker }
 
-  let watchId = null;             // navigator.geolocation watchPosition ID
-  let lastUserLat = null;
-  let lastUserLng = null;
-  let lastNearestSwId = null;     // Track last announced SW to avoid repeats
-  let ttsLock = false;            // Debounce TTS calls
+  let watchId        = null;
+  let lastUserLat    = null;
+  let lastUserLng    = null;
+  let lastNearestSwId= null;
+  let ttsLock        = false;
 
-  // ─────────────────────────────────────────────────────────────────
-  // SW MARKER ICON FACTORY
-  // Returns a custom L.DivIcon coloured by pole status.
-  // Variable name uses "sw" convention.
-  // ─────────────────────────────────────────────────────────────────
-  function swIconFor(status, highlighted = false) {
-    const colors = { normal: '#22c55e', warning: '#f4a400', danger: '#ef4444', pending: '#64748b' };
-    const fill = colors[status] || colors.pending;
-    const ring = highlighted ? '3px solid #fff' : '2px solid rgba(255,255,255,0.4)';
-    const size = highlighted ? 20 : 14;
-    const pulse = highlighted ? `
-      box-shadow: 0 0 0 0 ${fill};
-      animation: sw-pulse 1.2s ease-out infinite;
-    ` : '';
-    const styleBlock = highlighted ? `<style>
+  // ── Color map by category ──────────────────────────────────────────────────
+  const CAT_COLOR = {
+    normal:   '#22c55e',
+    warning:  '#f4a400',
+    danger:   '#ef4444',
+    landmark: '#00bcd4',
+    pending:  '#64748b'
+  };
+
+  // ── SW icon factory ────────────────────────────────────────────────────────
+  function swIconFor(category, highlighted = false) {
+    const fill = CAT_COLOR[category] || CAT_COLOR.pending;
+    const isLandmark = category === 'landmark';
+    const size = highlighted ? (isLandmark ? 22 : 18) : (isLandmark ? 16 : 13);
+    const shape = isLandmark
+      ? `border-radius:3px;transform:rotate(45deg);`  // diamond for landmarks
+      : `border-radius:50%;`;
+
+    const pulseStyle = highlighted
+      ? `animation:sw-pulse 1.2s ease-out infinite;`
+      : '';
+
+    const styleTag = highlighted ? `<style>
       @keyframes sw-pulse {
-        0%   { box-shadow: 0 0 0 0 ${fill}88; }
-        70%  { box-shadow: 0 0 0 10px transparent; }
-        100% { box-shadow: 0 0 0 0 transparent; }
+        0%   {box-shadow:0 0 0 0 ${fill}99}
+        70%  {box-shadow:0 0 0 10px transparent}
+        100% {box-shadow:0 0 0 0 transparent}
       }
     </style>` : '';
 
     return L.divIcon({
       className: '',
-      html: `${styleBlock}<div style="
-        width:${size}px;height:${size}px;border-radius:50%;
-        background:${fill};border:${ring};
-        position:relative;${pulse}
+      html: `${styleTag}<div style="
+        width:${size}px;height:${size}px;
+        background:${fill};
+        border:${highlighted ? '2.5px solid #fff' : '1.5px solid rgba(255,255,255,0.5)'};
+        ${shape}${pulseStyle}
       "></div>`,
       iconSize:   [size, size],
       iconAnchor: [size/2, size/2],
-      popupAnchor:[0, -(size/2 + 4)]
+      popupAnchor:[0, -(size/2 + 5)]
     });
   }
 
-  // User location icon
-  function userIcon() {
+  // ── User location icon (cyan ping) ────────────────────────────────────────
+  function _userIcon() {
     return L.divIcon({
       className: '',
       html: `<div style="
-        width:20px;height:20px;border-radius:50%;
+        width:18px;height:18px;border-radius:50%;
         background:#00bcd4;border:3px solid #fff;
-        box-shadow:0 0 0 0 #00bcd4;
         animation:user-ping 1.8s ease-out infinite;
       "></div>
-      <style>
-        @keyframes user-ping {
-          0%   { box-shadow: 0 0 0 0 #00bcd488; }
-          70%  { box-shadow: 0 0 0 14px transparent; }
-          100% { box-shadow: 0 0 0 0 transparent; }
-        }
-      </style>`,
-      iconSize:   [20, 20],
-      iconAnchor: [10, 10]
+      <style>@keyframes user-ping{
+        0%{box-shadow:0 0 0 0 #00bcd488}
+        70%{box-shadow:0 0 0 14px transparent}
+        100%{box-shadow:0 0 0 0 transparent}
+      }</style>`,
+      iconSize:   [18,18],
+      iconAnchor: [9,9]
     });
   }
 
-  // ─────────────────────────────────────────────────────────────────
-  // MAP INITIALISATION
-  // ─────────────────────────────────────────────────────────────────
+  // ── Build popup HTML for a SW pole ────────────────────────────────────────
+  function _swPopupHtml(swPole) {
+    const cat   = swPole.category || 'pending';
+    const color = CAT_COLOR[cat];
+    const def   = Data.statusDefs[cat] || { label: swPole.status, icon: '❓' };
+    const statusDisplay = swPole.statusNew || swPole.status || '–';
+
+    const repairSection = swPole.repairDate ? `
+      <div style="margin-top:6px;padding-top:6px;border-top:1px solid #243447;">
+        <div style="font-size:0.68rem;color:#94a3b8;">🔧 ซ่อมล่าสุด: ${swPole.repairDate}</div>
+        ${swPole.repairItem ? `<div style="font-size:0.68rem;color:#94a3b8;">${swPole.repairItem}</div>` : ''}
+        ${swPole.repairBy   ? `<div style="font-size:0.68rem;color:#94a3b8;">โดย: ${swPole.repairBy}</div>` : ''}
+      </div>` : '';
+
+    const photoBtn = swPole.photoUrl ? `
+      <a href="${swPole.photoUrl}" target="_blank" style="
+        display:inline-block;background:#1a2d42;color:#e2e8f0;
+        border:1px solid #243447;border-radius:4px;padding:3px 8px;
+        font-size:0.68rem;text-decoration:none;margin-top:6px;">
+        📷 ดูรูปภาพ
+      </a>` : '';
+
+    const workOrderBtn = swPole.workOrderUrl ? `
+      <a href="${swPole.workOrderUrl}" target="_blank" style="
+        display:inline-block;background:#1a2d42;color:#e2e8f0;
+        border:1px solid #243447;border-radius:4px;padding:3px 8px;
+        font-size:0.68rem;text-decoration:none;margin-top:6px;margin-left:4px;">
+        📋 ใบแจ้งงาน
+      </a>` : '';
+
+    const editorInfo = swPole.lastEditor
+      ? `<div style="font-size:0.65rem;color:#64748b;margin-top:2px;">แก้ไขโดย: ${swPole.lastEditor} · ${swPole.lastUpdated || ''}</div>`
+      : '';
+
+    return `
+      <div style="min-width:180px;">
+        <div style="font-weight:900;font-size:0.95rem;color:#f4a400;">${swPole.id}</div>
+        ${swPole.name && swPole.name !== swPole.id ? `<div style="font-size:0.75rem;color:#94a3b8;">${swPole.name}</div>` : ''}
+        <div style="margin:5px 0;">
+          <span style="
+            display:inline-block;padding:2px 9px;border-radius:12px;
+            background:${color}22;color:${color};
+            font-size:0.75rem;font-weight:700;border:1px solid ${color}66;
+          ">${def.icon} ${statusDisplay}</span>
+        </div>
+        ${editorInfo}
+        ${repairSection}
+        <div style="${photoBtn||workOrderBtn?'margin-top:6px;':''}">${photoBtn}${workOrderBtn}</div>
+        <div style="margin-top:8px;display:flex;gap:6px;">
+          <button onclick="App.openFormForSw('${swPole.id}')"
+            style="flex:1;background:#f4a400;color:#000;border:none;border-radius:5px;
+                   padding:5px 0;font-size:0.72rem;font-weight:800;cursor:pointer;">
+            📝 บันทึก
+          </button>
+        </div>
+      </div>`;
+  }
+
+  // ── Map init ───────────────────────────────────────────────────────────────
   function init() {
     map = L.map('map', {
-      center: CONFIG.MAP_CENTER,
-      zoom:   CONFIG.MAP_ZOOM,
-      zoomControl: true,
-      attributionControl: false
+      center:           CONFIG.MAP_CENTER,
+      zoom:             CONFIG.MAP_ZOOM,
+      zoomControl:      true,
+      attributionControl:false
     });
 
-    // Base tile layer — CartoDB dark for night-driving readability
     L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
-      subdomains: 'abcd',
-      maxZoom: 20,
-      attribution: '© OpenStreetMap © CARTO'
+      subdomains: 'abcd', maxZoom: 21,
+      attribution: '© OSM © CARTO'
     }).addTo(map);
 
-    // Faint attribution
     L.control.attribution({ prefix: '© OSM / CARTO' }).addTo(map);
 
-    // SW marker layer group
     swMarkerGroup = L.layerGroup().addTo(map);
 
-    // Center-map button
+    // Legend control
+    _addLegend();
+
     document.getElementById('btn-center-map').addEventListener('click', () => {
-      if (lastUserLat !== null) {
-        map.setView([lastUserLat, lastUserLng], 16);
-      }
+      if (lastUserLat !== null) map.setView([lastUserLat, lastUserLng], 18);
     });
 
     return map;
   }
 
-  // ─────────────────────────────────────────────────────────────────
-  // PLOT ALL SW MARKERS
-  // Clears and redraws every pole from the Data cache.
-  // All variables use "sw" prefix.
-  // ─────────────────────────────────────────────────────────────────
+  // ── Legend ─────────────────────────────────────────────────────────────────
+  function _addLegend() {
+    const legend = L.control({ position: 'topright' });
+    legend.onAdd = () => {
+      const div = L.DomUtil.create('div');
+      div.style.cssText = 'background:rgba(18,31,47,0.9);border:1px solid #243447;border-radius:8px;padding:8px 10px;font-size:0.67rem;color:#e2e8f0;line-height:1.8;backdrop-filter:blur(4px);';
+      div.innerHTML = `
+        <div style="font-weight:700;color:#f4a400;margin-bottom:4px;">สถานะเสาไฟ</div>
+        <div><span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:#22c55e;margin-right:5px;"></span>ไฟติดปกติ (AB)</div>
+        <div><span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:#f4a400;margin-right:5px;"></span>ไฟดับบางส่วน</div>
+        <div><span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:#ef4444;margin-right:5px;"></span>ไฟดับทั้งหมด</div>
+        <div><span style="display:inline-block;width:10px;height:10px;background:#00bcd4;transform:rotate(45deg);margin-right:5px;"></span>เสาหลัก</div>
+        <div><span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:#64748b;margin-right:5px;"></span>ยังไม่ตรวจ</div>`;
+      L.DomEvent.disableClickPropagation(div);
+      return div;
+    };
+    legend.addTo(map);
+  }
+
+  // ── Plot all SW markers ────────────────────────────────────────────────────
   function plotSwMarkers() {
     swMarkerGroup.clearLayers();
     Object.keys(swMarkers).forEach(k => delete swMarkers[k]);
 
+    let plotted = 0;
     for (const swPole of Data.swList) {
+      if (!swPole.lat || !swPole.lng) continue;
+
       const swMarker = L.marker([swPole.lat, swPole.lng], {
-        icon: swIconFor(swPole.status),
-        title: swPole.id
+        icon:  swIconFor(swPole.category || 'pending'),
+        title: `${swPole.id} — ${swPole.status}`
       });
 
-      const statusLabel  = CONFIG.STATUS_LABELS[swPole.status] || swPole.status;
-      const statusColor  = CONFIG.STATUS_COLORS[swPole.status] || '#64748b';
-      const lastDate     = swPole.lastChecked || 'ยังไม่ตรวจ';
-
-      swMarker.bindPopup(`
-        <div class="sw-popup-title">${swPole.id}</div>
-        <div>${swPole.name}</div>
-        <div style="margin:4px 0;"><span style="
-          display:inline-block;padding:2px 8px;border-radius:12px;
-          background:${statusColor}22;color:${statusColor};
-          font-size:0.75rem;font-weight:700;border:1px solid ${statusColor}55;
-        ">${statusLabel}</span></div>
-        <div style="font-size:0.7rem;color:#94a3b8;margin-top:2px;">${swPole.km}</div>
-        <div style="font-size:0.7rem;color:#64748b;">ตรวจล่าสุด: ${lastDate}</div>
-        <div style="margin-top:8px;">
-          <button onclick="App.openFormForSw('${swPole.id}')"
-            style="background:#f4a400;color:#000;border:none;border-radius:5px;
-                   padding:4px 10px;font-size:0.72rem;font-weight:700;cursor:pointer;">
-            📋 บันทึกผล
-          </button>
-        </div>
-      `, { className: 'sw-popup' });
+      swMarker.bindPopup(_swPopupHtml(swPole), {
+        className:   'sw-popup',
+        maxWidth:    240,
+        minWidth:    180
+      });
 
       swMarkerGroup.addLayer(swMarker);
       swMarkers[swPole.id] = swMarker;
+      plotted++;
     }
 
-    console.info(`[Map] Plotted ${Data.swList.length} sw markers`);
+    console.info(`[Map] Plotted ${plotted} sw markers`);
   }
 
-  // Update a single SW marker's icon (after status change)
-  function updateSwMarkerIcon(swId, status, highlighted = false) {
+  // Update a single SW marker icon
+  function updateSwMarkerIcon(swId, category, highlighted = false) {
     const swMark = swMarkers[swId];
-    if (swMark) swMark.setIcon(swIconFor(status, highlighted));
+    if (swMark) swMark.setIcon(swIconFor(category, highlighted));
   }
 
-  // ─────────────────────────────────────────────────────────────────
-  // GPS TRACKING
-  // ─────────────────────────────────────────────────────────────────
+  // ── GPS tracking ───────────────────────────────────────────────────────────
   function startGPS() {
-    if (!('geolocation' in navigator)) {
-      App.toast('อุปกรณ์ไม่รองรับ GPS');
-      return;
-    }
-
+    if (!('geolocation' in navigator)) { App.toast('อุปกรณ์ไม่รองรับ GPS'); return; }
     watchId = navigator.geolocation.watchPosition(
-      _onGPSSuccess,
-      _onGPSError,
-      {
-        enableHighAccuracy: true,
-        timeout: 10000,
-        maximumAge: 1000
-      }
+      _onGPSSuccess, _onGPSError,
+      { enableHighAccuracy: true, timeout: 10000, maximumAge: 1000 }
     );
-
     document.getElementById('gps-dot').classList.add('active');
     document.getElementById('gps-label').textContent = 'GPS Active';
   }
 
   function stopGPS() {
-    if (watchId !== null) {
-      navigator.geolocation.clearWatch(watchId);
-      watchId = null;
-    }
+    if (watchId !== null) { navigator.geolocation.clearWatch(watchId); watchId = null; }
     document.getElementById('gps-dot').classList.remove('active');
     document.getElementById('gps-label').textContent = 'GPS Off';
   }
@@ -199,27 +249,21 @@ const MapModule = (() => {
     lastUserLat = lat;
     lastUserLng = lng;
 
-    // ── Update user marker ──────────────────────────────────────
     if (!userMarker) {
-      userMarker    = L.marker([lat, lng], { icon: userIcon(), zIndexOffset: 1000 }).addTo(map);
-      userAccCircle = L.circle([lat, lng], { radius: accuracy, color: '#00bcd4', fillOpacity: 0.08, weight: 1 }).addTo(map);
+      userMarker    = L.marker([lat, lng], { icon: _userIcon(), zIndexOffset: 2000 }).addTo(map);
+      userAccCircle = L.circle([lat, lng],  { radius: accuracy, color:'#00bcd4', fillOpacity:0.07, weight:1 }).addTo(map);
     } else {
       userMarker.setLatLng([lat, lng]);
       userAccCircle.setLatLng([lat, lng]).setRadius(accuracy);
     }
 
-    // ── Auto-follow ─────────────────────────────────────────────
-    if (CONFIG.FOLLOW_MAP) {
-      map.setView([lat, lng], map.getZoom(), { animate: true, duration: 0.5 });
-    }
+    if (CONFIG.FOLLOW_MAP) map.setView([lat, lng], map.getZoom(), { animate: true, duration: 0.4 });
 
-    // ── HUD update ──────────────────────────────────────────────
     const kmh = speed != null ? Math.round(speed * 3.6) : '–';
     document.getElementById('hud-speed').textContent = kmh;
     document.getElementById('hud-acc').textContent   = Math.round(accuracy);
     document.getElementById('hud-coords').textContent = `${lat.toFixed(5)}, ${lng.toFixed(5)}`;
 
-    // ── Proximity check ─────────────────────────────────────────
     _checkSwProximity(lat, lng);
   }
 
@@ -228,90 +272,96 @@ const MapModule = (() => {
     document.getElementById('gps-label').textContent = 'GPS Error';
   }
 
-  // ─────────────────────────────────────────────────────────────────
-  // SW PROXIMITY CHECK & TTS VOICE ALERT
-  // ─────────────────────────────────────────────────────────────────
+  // ── Proximity check + TTS ──────────────────────────────────────────────────
   function _checkSwProximity(lat, lng) {
     const result = Data.findNearestSw(lat, lng);
     if (!result) return;
 
     const { sw: nearestSw, distanceM } = result;
 
-    // Update HUD
-    document.getElementById('hud-sw-id').textContent   = nearestSw.id.replace('SW-KAE-', 'SW-');
-    document.getElementById('hud-sw-name').textContent  = nearestSw.name;
-    document.getElementById('hud-sw-dist').textContent  = `${distanceM} ม.`;
+    document.getElementById('hud-sw-id').textContent  = nearestSw.id;
+    document.getElementById('hud-sw-name').textContent = nearestSw.status || '–';
+    document.getElementById('hud-sw-dist').textContent = `${distanceM} ม.`;
 
-    // Highlight nearest SW marker
+    // Un-highlight previous, highlight current
     if (lastNearestSwId && lastNearestSwId !== nearestSw.id) {
-      updateSwMarkerIcon(lastNearestSwId, (Data.swList.find(s => s.id === lastNearestSwId)?.status || 'pending'), false);
+      const prev = Data.swList.find(s => s.id === lastNearestSwId);
+      if (prev) updateSwMarkerIcon(lastNearestSwId, prev.category || 'pending', false);
     }
-    updateSwMarkerIcon(nearestSw.id, nearestSw.status, true);
+    updateSwMarkerIcon(nearestSw.id, nearestSw.category || 'pending', true);
     lastNearestSwId = nearestSw.id;
 
-    // ── Voice alert when within threshold distance ───────────────
+    // TTS alert
     if (distanceM <= CONFIG.ALERT_DISTANCE_M && CONFIG.TTS_ENABLED && !ttsLock) {
       _triggerVoiceAlert(nearestSw);
     }
   }
 
-  /**
-   * _triggerVoiceAlert — fires TTS for a given SW pole.
-   * Debounced with ttsLock to prevent repeated announcements.
-   */
+  // ── TTS voice alert ────────────────────────────────────────────────────────
   function _triggerVoiceAlert(swPole) {
     ttsLock = true;
 
-    // Visual alert
-    const alertBox = document.getElementById('voice-alert-box');
-    alertBox.textContent = `⚡ ${swPole.id} — ${swPole.name}`;
-    alertBox.style.display = 'block';
-    setTimeout(() => { alertBox.style.display = 'none'; }, 4000);
+    // Visual flash
+    const box = document.getElementById('voice-alert-box');
+    const cat  = swPole.category || 'pending';
+    const def  = Data.statusDefs[cat];
+    box.textContent = `${def?.icon || '⚡'} ${swPole.id} — ${swPole.status || swPole.id}`;
+    box.style.background = cat === 'danger' ? '#ef4444' : cat === 'warning' ? '#f4a400' : '#22c55e';
+    box.style.display = 'block';
+    setTimeout(() => { box.style.display = 'none'; }, 4000);
 
-    // Web Speech API TTS
+    // Web Speech TTS
     if ('speechSynthesis' in window) {
-      window.speechSynthesis.cancel(); // stop any ongoing speech
+      window.speechSynthesis.cancel();
       const utter = new SpeechSynthesisUtterance();
 
-      // Build Thai-friendly announcement
-      const poleNumber = swPole.id.split('-').pop(); // e.g. "001"
-      const statusLabel = CONFIG.STATUS_LABELS[swPole.status] || swPole.status;
-      utter.text  = `เสาไฟ หมายเลข ${poleNumber}. สถานะ ${statusLabel}`;
-      utter.lang  = 'th-TH';
-      utter.rate  = 0.95;
-      utter.pitch = 1.0;
+      // Construct Thai announcement from real status values
+      let announcement;
+      const s = String(swPole.statusNew || swPole.status || '').trim();
+      if (s.includes('ไฟติดAB')) {
+        announcement = `เสา ${swPole.id} ไฟติดปกติ ทั้งสองฝั่ง`;
+      } else if (s.includes('ไฟดับAB') || s.includes('ดับAB')) {
+        announcement = `เสา ${swPole.id} ไฟดับ ทั้งสองฝั่ง ต้องแจ้งซ่อมด่วน`;
+      } else if (s.includes('ไฟดับA') || s.includes('ดับA')) {
+        announcement = `เสา ${swPole.id} ไฟดับ ฝั่ง เอ`;
+      } else if (s.includes('ไฟดับB') || s.includes('ดับB')) {
+        announcement = `เสา ${swPole.id} ไฟดับ ฝั่ง บี`;
+      } else if (s.toLowerCase().includes('off')) {
+        announcement = `เสา ${swPole.id} ไฟออฟไลน์`;
+      } else {
+        announcement = `เสาหลัก ${swPole.id}`;
+      }
+
+      utter.text   = announcement;
+      utter.lang   = 'th-TH';
+      utter.rate   = 0.9;
+      utter.pitch  = 1.0;
       utter.volume = 1.0;
 
-      // Fallback to en-US if Thai voice unavailable
       const voices = window.speechSynthesis.getVoices();
       const thVoice = voices.find(v => v.lang.startsWith('th'));
       if (thVoice) utter.voice = thVoice;
 
       window.speechSynthesis.speak(utter);
-      console.info(`[TTS] Announced: ${utter.text}`);
+      console.info(`[TTS] ${announcement}`);
     }
 
-    // Unlock after cooldown (allow next alert after 8 seconds)
     setTimeout(() => { ttsLock = false; }, 8000);
   }
 
-  // Manual TTS test (from settings or dev tools)
-  function testTTS(message = 'ทดสอบระบบเสียงแจ้งเตือน เสาไฟหมายเลขหนึ่ง ปกติ') {
-    if (!('speechSynthesis' in window)) {
-      App.toast('อุปกรณ์ไม่รองรับ TTS');
-      return;
-    }
+  // Manual TTS test
+  function testTTS() {
+    if (!('speechSynthesis' in window)) { App.toast('อุปกรณ์ไม่รองรับ TTS'); return; }
     window.speechSynthesis.cancel();
-    const utter = new SpeechSynthesisUtterance(message);
-    utter.lang = 'th-TH'; utter.rate = 0.95;
+    const utter = new SpeechSynthesisUtterance('ทดสอบระบบเสียง เสาหนึ่ง ไฟติดปกติ ทั้งสองฝั่ง');
+    utter.lang = 'th-TH';
     const thVoice = window.speechSynthesis.getVoices().find(v => v.lang.startsWith('th'));
     if (thVoice) utter.voice = thVoice;
     window.speechSynthesis.speak(utter);
+    App.toast('🔊 ทดสอบเสียง TTS');
   }
 
-  // ─────────────────────────────────────────────────────────────────
-  // PUBLIC API
-  // ─────────────────────────────────────────────────────────────────
+  // ── Public API ─────────────────────────────────────────────────────────────
   return {
     init,
     plotSwMarkers,
@@ -319,7 +369,7 @@ const MapModule = (() => {
     startGPS,
     stopGPS,
     testTTS,
-    swMarkers,   // expose for external highlight calls
+    swMarkers,
     get map()         { return map; },
     get userLat()     { return lastUserLat; },
     get userLng()     { return lastUserLng; },
